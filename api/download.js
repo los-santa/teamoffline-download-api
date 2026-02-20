@@ -1,53 +1,71 @@
-const { createClient } = require("@supabase/supabase-js");
+export const config = { runtime: "edge" };
 
-module.exports = async (req, res) => {
+function json(status, obj) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+export default async function handler(req) {
   try {
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
+    const url = new URL(req.url);
 
-    // ✅ asset_id: 기본값은 당신이 준 ID
     const assetId =
-      (req.query && req.query.asset) ||
+      url.searchParams.get("asset") ||
       "3ac5c728-4bef-41e0-9f02-af89b4d4a371";
 
-    // 1) 실제 다운로드 URL 조회
-    const { data: asset, error: assetErr } = await supabase
-      .from("release_assets")
-      .select("download_url")
-      .eq("id", assetId)
-      .single();
+    const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+    const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-    if (assetErr || !asset || !asset.download_url) {
-      return res.status(404).json({
+    if (!SUPABASE_URL || !SERVICE_KEY) {
+      return json(500, { ok: false, message: "Missing env vars" });
+    }
+
+    const headers = {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      "content-type": "application/json",
+    };
+
+    // 1) download_url 조회
+    const assetRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/release_assets?id=eq.${assetId}&select=download_url`,
+      { headers }
+    );
+
+    const assetJson = await assetRes.json().catch(() => null);
+    const downloadUrl =
+      assetJson && assetJson[0] ? assetJson[0].download_url : null;
+
+    if (!assetRes.ok || !downloadUrl) {
+      return json(404, {
         ok: false,
         message: "Asset not found or download_url is missing",
         asset_id: assetId,
       });
     }
 
-    // 2) 다운로드 로그 기록 (최소 필드만)
-    const ua = req.headers["user-agent"] || null;
-    const ref =
-      req.headers["referer"] || req.headers["referrer"] || null;
+    // 2) 다운로드 로그 INSERT
+    const ua = req.headers.get("user-agent");
+    const ref = req.headers.get("referer") || req.headers.get("referrer");
 
-    await supabase.from("downloads").insert([
-      {
-        asset_id: assetId,
-        status: "success",
-        user_agent: ua,
-        referrer: ref,
-      },
-    ]);
+    await fetch(`${SUPABASE_URL}/rest/v1/downloads`, {
+      method: "POST",
+      headers: { ...headers, Prefer: "return=minimal" },
+      body: JSON.stringify([
+        {
+          asset_id: assetId,
+          status: "success",
+          user_agent: ua,
+          referrer: ref,
+        },
+      ]),
+    });
 
     // 3) 리다이렉트
-    res.statusCode = 302;
-    res.setHeader("Location", asset.download_url);
-    // 다운로드 링크는 캐시하면 집계가 꼬일 수 있어서 no-store 권장
-    res.setHeader("Cache-Control", "no-store");
-    return res.end();
+    return Response.redirect(downloadUrl, 302);
   } catch (e) {
-    return res.status(500).json({ ok: false, message: String(e) });
+    return json(500, { ok: false, message: String(e) });
   }
-};
+}
