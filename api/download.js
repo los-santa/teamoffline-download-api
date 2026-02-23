@@ -28,15 +28,13 @@ export default async function handler(req) {
       "content-type": "application/json",
     };
 
-    // 1) download_url 조회
     const assetRes = await fetch(
       `${SUPABASE_URL}/rest/v1/release_assets?id=eq.${assetId}&select=download_url`,
       { headers }
     );
 
     const assetJson = await assetRes.json().catch(() => null);
-    const downloadUrl =
-      assetJson && assetJson[0] ? assetJson[0].download_url : null;
+    const downloadUrl = assetJson && assetJson[0] && assetJson[0].download_url;
 
     if (!assetRes.ok || !downloadUrl) {
       return json(404, {
@@ -46,7 +44,6 @@ export default async function handler(req) {
       });
     }
 
-    // 2) 다운로드 로그 INSERT
     const ua = req.headers.get("user-agent");
     const ref = req.headers.get("referer") || req.headers.get("referrer");
 
@@ -63,7 +60,6 @@ export default async function handler(req) {
       ]),
     });
 
-    // 3) 리다이렉트
     return Response.redirect(downloadUrl, 302);
   } catch (e) {
     return json(500, { ok: false, message: String(e) });
